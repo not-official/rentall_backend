@@ -2,6 +2,10 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
 
 
+# =========================
+# AUTH SCHEMAS
+# =========================
+
 class SignupRequest(BaseModel):
     name: str = Field(min_length=2)
     email: EmailStr
@@ -27,6 +31,10 @@ class AuthUserResponse(BaseModel):
     token: str
 
 
+# =========================
+# CATEGORY SCHEMAS
+# =========================
+
 class CategoryCreate(BaseModel):
     name: str
     image: Optional[str] = ""
@@ -37,6 +45,10 @@ class CategoryResponse(BaseModel):
     name: str
     image: str
 
+
+# =========================
+# ITEM SCHEMAS
+# =========================
 
 class ItemCreate(BaseModel):
     name: str
@@ -77,6 +89,16 @@ class ItemResponse(BaseModel):
     image: str
     images: List[str]
     source: Optional[str] = "backend"
+
+    # Real owner details from backend
+    ownerName: str = ""
+    ownerEmail: str = ""
+    ownerProfilePic: str = ""
+
+
+# =========================
+# BOOKING / RENTAL SCHEMAS
+# =========================
 
 class BookingCreate(BaseModel):
     itemId: str

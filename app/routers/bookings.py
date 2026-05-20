@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Booking, User
-from ..schemas import BookingCreate, BookingResponse
+from ..models import Booking, User, Item
+from ..schemas import BookingCreate
 from ..dependencies import get_current_user
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
@@ -17,6 +17,21 @@ def clean_prefixed_id(value: str | None, prefix: str) -> int | None:
 
     if value.startswith(prefix):
         return int(value.replace(prefix, ""))
+
+    if value.isdigit():
+        return int(value)
+
+    return None
+
+
+def clean_backend_item_id(value: str | None) -> int | None:
+    if not value:
+        return None
+
+    value = str(value)
+
+    if value.startswith("bi"):
+        return int(value.replace("bi", ""))
 
     if value.isdigit():
         return int(value)
@@ -59,7 +74,10 @@ def create_booking(
     current_user: User = Depends(get_current_user),
 ):
     if payload.days < 1:
-        raise HTTPException(status_code=400, detail="Rental days must be at least 1.")
+        raise HTTPException(
+            status_code=400,
+            detail="Rental days must be at least 1.",
+        )
 
     owner_id = clean_prefixed_id(payload.ownerId, "u")
 
@@ -74,6 +92,23 @@ def create_booking(
             status_code=400,
             detail="You cannot rent your own item.",
         )
+
+    backend_item_id = clean_backend_item_id(payload.itemId)
+
+    if backend_item_id:
+        item = db.query(Item).filter(Item.id == backend_item_id).first()
+
+        if not item:
+            raise HTTPException(
+                status_code=404,
+                detail="Item not found.",
+            )
+
+        if item.stock <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="This item is out of stock.",
+            )
 
     expected_total = payload.pricePerDay * payload.days
 
@@ -129,6 +164,7 @@ def get_owner_requests(
 @router.get("")
 def get_all_bookings(db: Session = Depends(get_db)):
     bookings = db.query(Booking).order_by(Booking.created_at.desc()).all()
+
     return [format_booking(booking) for booking in bookings]
 
 
@@ -143,13 +179,41 @@ def accept_booking(
     booking = db.query(Booking).filter(Booking.id == clean_id).first()
 
     if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found.")
+        raise HTTPException(
+            status_code=404,
+            detail="Booking not found.",
+        )
 
     if booking.owner_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only the owner can accept this request.")
+        raise HTTPException(
+            status_code=403,
+            detail="Only the owner can accept this request.",
+        )
 
     if booking.status != "pending":
-        raise HTTPException(status_code=400, detail="Only pending requests can be accepted.")
+        raise HTTPException(
+            status_code=400,
+            detail="Only pending requests can be accepted.",
+        )
+
+    backend_item_id = clean_backend_item_id(booking.item_id)
+
+    if backend_item_id:
+        item = db.query(Item).filter(Item.id == backend_item_id).first()
+
+        if not item:
+            raise HTTPException(
+                status_code=404,
+                detail="Item not found.",
+            )
+
+        if item.stock <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="This item is already out of stock.",
+            )
+
+        item.stock = item.stock - 1
 
     booking.status = "confirmed"
 
@@ -170,13 +234,22 @@ def reject_booking(
     booking = db.query(Booking).filter(Booking.id == clean_id).first()
 
     if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found.")
+        raise HTTPException(
+            status_code=404,
+            detail="Booking not found.",
+        )
 
     if booking.owner_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only the owner can reject this request.")
+        raise HTTPException(
+            status_code=403,
+            detail="Only the owner can reject this request.",
+        )
 
     if booking.status != "pending":
-        raise HTTPException(status_code=400, detail="Only pending requests can be rejected.")
+        raise HTTPException(
+            status_code=400,
+            detail="Only pending requests can be rejected.",
+        )
 
     booking.status = "rejected"
 
@@ -197,10 +270,16 @@ def cancel_booking(
     booking = db.query(Booking).filter(Booking.id == clean_id).first()
 
     if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found.")
+        raise HTTPException(
+            status_code=404,
+            detail="Booking not found.",
+        )
 
     if booking.user_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="You cannot cancel this booking.")
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot cancel this booking.",
+        )
 
     if booking.status == "confirmed":
         raise HTTPException(

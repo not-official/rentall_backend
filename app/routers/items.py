@@ -1,17 +1,16 @@
 import json
-
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from sqlalchemy.orm import Session
-from sqlalchemy import or_
 import os
 import shutil
 from uuid import uuid4
 
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from sqlalchemy.orm import Session
+from sqlalchemy import or_
+
 from ..database import get_db
-from ..models import Item
-from ..schemas import ItemCreate, ItemUpdate, ItemResponse
-from ..dependencies import get_current_user
 from ..models import Item, User
+from ..schemas import ItemCreate, ItemUpdate
+from ..dependencies import get_current_user
 
 router = APIRouter(prefix="/items", tags=["Items"])
 
@@ -22,11 +21,9 @@ def clean_item_id(value: str | None) -> int | None:
 
     value = str(value)
 
-    # Backend item IDs will be bi1, bi2, bi3
     if value.startswith("bi"):
         return int(value.replace("bi", ""))
 
-    # Fallback support if someone passes only number
     if value.isdigit():
         return int(value)
 
@@ -48,11 +45,16 @@ def clean_prefixed_id(value: str | None, prefix: str) -> int | None:
     return None
 
 
-def format_item(item: Item) -> dict:
+def format_item(item: Item, db: Session | None = None) -> dict:
     try:
         images = json.loads(item.images) if item.images else []
     except Exception:
         images = []
+
+    owner = None
+
+    if db and item.user_id:
+        owner = db.query(User).filter(User.id == item.user_id).first()
 
     return {
         "_id": f"bi{item.id}",
@@ -67,6 +69,9 @@ def format_item(item: Item) -> dict:
         "image": item.image or "",
         "images": images,
         "source": "backend",
+        "ownerName": owner.name if owner else "RentAll Owner",
+        "ownerEmail": owner.email if owner else "",
+        "ownerProfilePic": owner.profile_pic if owner else "",
     }
 
 
@@ -102,15 +107,22 @@ def get_items(
     if max_price is not None:
         query = query.filter(Item.price <= max_price)
 
-    items = query.all()
+    items = query.order_by(Item.id.desc()).all()
 
-    return [format_item(item) for item in items]
+    return [format_item(item, db) for item in items]
 
 
 @router.get("/featured")
 def get_featured_items(db: Session = Depends(get_db)):
-    items = db.query(Item).filter(Item.featured == True).all()
-    return [format_item(item) for item in items]
+    items = (
+        db.query(Item)
+        .filter(Item.featured == True)
+        .order_by(Item.id.desc())
+        .all()
+    )
+
+    return [format_item(item, db) for item in items]
+
 
 @router.post("/upload-image")
 def upload_item_image(file: UploadFile = File(...)):
@@ -119,7 +131,7 @@ def upload_item_image(file: UploadFile = File(...)):
     if file.content_type not in allowed_types:
         raise HTTPException(
             status_code=400,
-            detail="Only JPG, PNG, and WEBP images are allowed."
+            detail="Only JPG, PNG, and WEBP images are allowed.",
         )
 
     upload_dir = "uploads"
@@ -133,8 +145,8 @@ def upload_item_image(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
 
     return {
-        "imageUrl": f"http://127.0.0.1:8000/uploads/{filename}"
-    }    
+        "imageUrl": f"http://127.0.0.1:8000/uploads/{filename}",
+    }
 
 
 @router.get("/{item_id}")
@@ -146,7 +158,7 @@ def get_item(item_id: str, db: Session = Depends(get_db)):
     if not item:
         raise HTTPException(status_code=404, detail="Item not found.")
 
-    return format_item(item)
+    return format_item(item, db)
 
 
 @router.post("")
@@ -172,17 +184,28 @@ def create_item(
     db.commit()
     db.refresh(item)
 
-    return format_item(item)
+    return format_item(item, db)
 
 
 @router.put("/{item_id}")
-def update_item(item_id: str, payload: ItemUpdate, db: Session = Depends(get_db)):
+def update_item(
+    item_id: str,
+    payload: ItemUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     clean_id = clean_item_id(item_id)
 
     item = db.query(Item).filter(Item.id == clean_id).first()
 
     if not item:
         raise HTTPException(status_code=404, detail="Item not found.")
+
+    if item.user_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the owner can update this item.",
+        )
 
     if payload.name is not None:
         item.name = payload.name
@@ -205,9 +228,6 @@ def update_item(item_id: str, payload: ItemUpdate, db: Session = Depends(get_db)
     if payload.category is not None:
         item.category_id = clean_prefixed_id(payload.category, "cat")
 
-    if payload.userId is not None:
-        item.user_id = clean_prefixed_id(payload.userId, "u")
-
     if payload.image is not None:
         item.image = payload.image
 
@@ -217,17 +237,27 @@ def update_item(item_id: str, payload: ItemUpdate, db: Session = Depends(get_db)
     db.commit()
     db.refresh(item)
 
-    return format_item(item)
+    return format_item(item, db)
 
 
 @router.delete("/{item_id}")
-def delete_item(item_id: str, db: Session = Depends(get_db)):
+def delete_item(
+    item_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     clean_id = clean_item_id(item_id)
 
     item = db.query(Item).filter(Item.id == clean_id).first()
 
     if not item:
         raise HTTPException(status_code=404, detail="Item not found.")
+
+    if item.user_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the owner can delete this item.",
+        )
 
     db.delete(item)
     db.commit()

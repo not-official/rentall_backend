@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
 import os
 import shutil
@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from ..database import get_db
 from ..models import User
-from ..schemas import SignupRequest, LoginRequest, AuthUserResponse
+from ..schemas import LoginRequest, AuthUserResponse
 from ..security import hash_password, verify_password, create_access_token
 from ..dependencies import get_current_user
 
@@ -38,9 +38,40 @@ def format_user_without_token(user: User) -> dict:
     }
 
 
+def save_profile_image(file: UploadFile, user_id: int) -> str:
+    allowed_types = ["image/jpeg", "image/png", "image/webp", "image/jpg"]
+
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only JPG, PNG, and WEBP images are allowed.",
+        )
+
+    upload_dir = "uploads/profile"
+    os.makedirs(upload_dir, exist_ok=True)
+
+    extension = file.filename.split(".")[-1].lower()
+    filename = f"profile-{user_id}-{uuid4()}.{extension}"
+    file_path = os.path.join(upload_dir, filename)
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    return f"http://127.0.0.1:8000/uploads/profile/{filename}"
+
+
 @router.post("/signup", response_model=AuthUserResponse)
-def signup(payload: SignupRequest, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == payload.email).first()
+async def signup(
+    name: str = Form(...),
+    email: str = Form(...),
+    phone: str = Form(""),
+    address: str = Form(""),
+    password: str = Form(...),
+    confirm: str = Form(""),
+    profileImage: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+):
+    existing_user = db.query(User).filter(User.email == email).first()
 
     if existing_user:
         raise HTTPException(
@@ -48,24 +79,43 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
             detail="Email already registered.",
         )
 
-    if payload.confirm is not None and payload.password != payload.confirm:
+    if len(name.strip()) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Name must be at least 2 characters.",
+        )
+
+    if len(password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 6 characters.",
+        )
+
+    if confirm and password != confirm:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Passwords do not match.",
         )
 
     new_user = User(
-        name=payload.name,
-        email=payload.email,
-        phone=payload.phone or "",
-        address=payload.address or "",
-        hashed_password=hash_password(payload.password),
+        name=name.strip(),
+        email=email.strip(),
+        phone=phone.strip(),
+        address=address.strip(),
+        hashed_password=hash_password(password),
         is_admin=False,
+        profile_pic="",
     )
 
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+
+    if profileImage:
+        image_url = save_profile_image(profileImage, new_user.id)
+        new_user.profile_pic = image_url
+        db.commit()
+        db.refresh(new_user)
 
     token = create_access_token(new_user.id, new_user.email)
 
@@ -105,27 +155,9 @@ def upload_profile_image(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    allowed_types = ["image/jpeg", "image/png", "image/webp", "image/jpg"]
+    image_url = save_profile_image(file, current_user.id)
 
-    if file.content_type not in allowed_types:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only JPG, PNG, and WEBP images are allowed.",
-        )
-
-    upload_dir = "uploads/profile"
-    os.makedirs(upload_dir, exist_ok=True)
-
-    extension = file.filename.split(".")[-1].lower()
-    filename = f"profile-{current_user.id}-{uuid4()}.{extension}"
-    file_path = os.path.join(upload_dir, filename)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    image_url = f"http://127.0.0.1:8000/uploads/profile/{filename}"
-
-    current_user.profile_pic = image_url
+    current_user.profile_pic = image_url    
 
     db.commit()
     db.refresh(current_user)

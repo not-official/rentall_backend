@@ -5,6 +5,7 @@ __pycache__/
 *.pyd
 *.pyc
 
+
 # Virtual environment
 venv/
 env/
@@ -48,3 +49,6 @@ dist/
 
 # Uvicorn / runtime
 *.pid
+
+uploads/*
+!uploads/.gitkeep
